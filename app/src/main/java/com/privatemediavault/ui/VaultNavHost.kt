@@ -19,7 +19,7 @@ import com.privatemediavault.domain.model.SessionState
 import com.privatemediavault.ui.auth.PinScreen
 import com.privatemediavault.ui.settings.SettingsScreen
 import com.privatemediavault.ui.vault.VaultGridScreen
-import com.privatemediavault.ui.viewer.MediaViewerScreen
+import com.privatemediavault.ui.viewer.MediaGalleryScreen
 import com.privatemediavault.viewmodel.AuthViewModel
 import com.privatemediavault.viewmodel.SettingsViewModel
 import com.privatemediavault.viewmodel.VaultViewModel
@@ -35,7 +35,7 @@ internal object VaultRoute {
 
 /**
  * The single-Activity navigation host that wires every screen together:
- * [PinScreen] (auth), [VaultGridScreen], [MediaViewerScreen], and [SettingsScreen].
+ * [PinScreen] (auth), [VaultGridScreen], [MediaGalleryScreen], and [SettingsScreen].
  *
  * The vault always starts locked, so the graph starts at [VaultRoute.PIN]. Two routing
  * rules enforce the session model from the requirements:
@@ -50,8 +50,9 @@ internal object VaultRoute {
  *    (Req 5.4, 7.2, 11.2). The whole back stack is cleared so no authenticated screen is
  *    reachable while locked.
  *
- * The selected [MediaItem] is held here and passed to the per-item [ViewerViewModel] when
- * navigating into the viewer.
+ * When the user taps a grid cell, the full current item list and the tapped item's index are
+ * captured here and handed to [MediaGalleryScreen], which opens a swipeable gallery — each page
+ * backed by its own per-item [ViewerViewModel] from [VaultContainer.viewerViewModelFactory].
  *
  * @param container the application object graph supplying the shared session manager and
  *   the view-model factories.
@@ -61,8 +62,10 @@ fun VaultNavHost(
     container: VaultContainer,
     navController: NavHostController = rememberNavController(),
 ) {
-    // The item currently open in the viewer; set when the user taps a grid cell.
-    var selectedItem by remember { mutableStateOf<MediaItem?>(null) }
+    // The gallery context: the full item list captured when the user taps a grid cell, plus
+    // the tapped item's index. The viewer opens a swipeable gallery centred on that index.
+    var galleryItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var galleryStartIndex by remember { mutableStateOf(0) }
 
     // Lock-routing: any transition to Locked sends the user back to PIN entry and clears
     // the authenticated back stack (Req 5.4, 9.1, 9.2, 9.4).
@@ -89,10 +92,17 @@ fun VaultNavHost(
 
         composable(VaultRoute.GRID) {
             val vaultViewModel: VaultViewModel = viewModel(factory = container.vaultViewModelFactory)
+            val gridState by vaultViewModel.uiState.collectAsState()
             VaultGridScreen(
                 viewModel = vaultViewModel,
                 onOpenItem = { item ->
-                    selectedItem = item
+                    // Capture the full current item list (grid order) and the tapped item's
+                    // index, then open the swipeable gallery centred on it.
+                    val list = gridState.items.map { it.item }
+                    galleryItems = list
+                    galleryStartIndex = list.indexOfFirst { it.id == item.id }.let { idx ->
+                        if (idx < 0) 0 else idx
+                    }
                     navController.navigate(VaultRoute.VIEWER) { launchSingleTop = true }
                 },
                 onOpenSettings = {
@@ -102,18 +112,25 @@ fun VaultNavHost(
         }
 
         composable(VaultRoute.VIEWER) {
-            val item = selectedItem
-            if (item == null) {
-                // No item selected (e.g. process death restored us here): pop back to the grid.
+            val items = galleryItems
+            if (items.isEmpty()) {
+                // No items to view (e.g. process death restored us here): pop back to the grid.
                 LaunchedEffect(Unit) { navController.popBackStack() }
                 return@composable
             }
-            val viewerViewModel: ViewerViewModel =
-                viewModel(factory = container.viewerViewModelFactory(item))
-            MediaViewerScreen(
-                viewModel = viewerViewModel,
+            val revealAll by container.revealAll.collectAsState()
+            MediaGalleryScreen(
+                items = items,
+                startIndex = galleryStartIndex,
+                viewModelFor = { mediaItem ->
+                    viewModel(
+                        key = mediaItem.id,
+                        factory = container.viewerViewModelFactory(mediaItem),
+                    )
+                },
                 onNavigateToPin = { navController.toPin() },
                 onBack = { navController.popBackStack() },
+                revealAll = revealAll,
             )
         }
 

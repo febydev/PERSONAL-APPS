@@ -1,6 +1,9 @@
 package com.privatemediavault.ui.viewer
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -10,17 +13,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -43,136 +48,202 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import com.privatemediavault.data.MediaItem
 import com.privatemediavault.domain.model.MediaType
 import com.privatemediavault.ui.blur.BlurRenderer
 import com.privatemediavault.ui.blur.RenderEffectBlurRenderer
+import com.privatemediavault.ui.theme.AppBackground
+import com.privatemediavault.ui.theme.GlassSurface
 import com.privatemediavault.viewmodel.ViewerEvent
 import com.privatemediavault.viewmodel.ViewerUiState
 import com.privatemediavault.viewmodel.ViewerViewModel
 
 /**
- * Media viewer entry point. Observes [ViewerViewModel.uiState] and renders the viewed item
- * blurred by default, offering unblur/re-blur controls and an explicit lock action.
+ * Swipeable media gallery. The User opens the gallery at the tapped [items] entry and swipes
+ * left/right through every vault item, like a photo gallery.
  *
- * One-shot [ViewerEvent.NavigateToPin] effects (an unblur denied because the session was
- * locked, Req 7.2, or an explicit lock, Req 9.4) are forwarded to [onNavigateToPin] so the
- * host can show the PIN entry screen.
+ * Each page hosts its **own** per-item [ViewerViewModel], obtained from [viewModelFor] keyed by
+ * the item id, so every page owns its blur/clear state and its ExoPlayer in isolation. Only the
+ * page currently centred plays video; pages scrolled off release their players (the per-page
+ * [VideoPlayer] is removed from composition and its `DisposableEffect` releases the player), so
+ * no players leak across swipes.
  *
- * @param viewModel       supplies the render state and the unblur/re-blur/lock actions.
+ * The page's blur/clear render state and the unblur/re-blur/lock actions all come from the
+ * single-item [ViewerViewModel] (its public API is unchanged): the item starts blurred (Req
+ * 6.1), the User unblurs it (Req 7.1) — denied to PIN entry while locked (Req 7.2) — and a video
+ * then plays with ExoPlayer (Req 7.3). Re-blur returns the item to Blurred State (Req 8.1) or
+ * surfaces a failure that keeps it visible (Req 8.2).
+ *
+ * One-shot [ViewerEvent.NavigateToPin] effects from the **current** page (a locked unblur, Req
+ * 7.2, or an explicit lock, Req 9.4) are forwarded to [onNavigateToPin] exactly once.
+ *
+ * When [revealAll] is on (and the session is unlocked) the centred page opens already unblurred
+ * to mirror the grid's global Reveal All override; otherwise pages stay blurred by default.
+ *
+ * @param items           every vault item, in grid order, that the gallery can swipe through.
+ * @param startIndex      the index of the tapped item; the gallery opens centred on it.
+ * @param viewModelFor    supplies the per-item [ViewerViewModel] (keyed by item id) for a page.
  * @param onNavigateToPin invoked when the vault must show the PIN entry screen.
- * @param onBack          invoked when the User leaves the viewer.
- * @param blurRenderer    produces the blur applied to the item in Blurred State (Req 6.1, 6.2).
+ * @param onBack          invoked when the User leaves the gallery.
+ * @param revealAll       the global Reveal All override; opens the centred page unblurred.
+ * @param blurRenderer    produces the blur applied to a page in Blurred State (Req 6.1, 6.2).
  */
 @Composable
-fun MediaViewerScreen(
-    viewModel: ViewerViewModel,
+fun MediaGalleryScreen(
+    items: List<MediaItem>,
+    startIndex: Int,
+    viewModelFor: @Composable (MediaItem) -> ViewerViewModel,
     onNavigateToPin: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    revealAll: Boolean = false,
     blurRenderer: BlurRenderer = RenderEffectBlurRenderer(),
 ) {
-    val state by viewModel.uiState.collectAsState()
+    if (items.isEmpty()) {
+        // Nothing to show (e.g. the vault emptied out): leave immediately.
+        LaunchedEffect(Unit) { onBack() }
+        return
+    }
 
-    // Forward navigation effects exactly once as they are emitted (Req 7.2, 9.4).
-    androidx.compose.runtime.LaunchedEffect(viewModel) {
-        viewModel.events.collect { event ->
+    val safeStart = startIndex.coerceIn(0, items.lastIndex)
+    val pagerState = rememberPagerState(initialPage = safeStart) { items.size }
+
+    // The page currently centred drives the top bar, the control row, and the event stream.
+    val currentItem = items[pagerState.currentPage.coerceIn(0, items.lastIndex)]
+    val currentViewModel = viewModelFor(currentItem)
+    val currentState by currentViewModel.uiState.collectAsState()
+
+    // Forward the current page's one-shot navigation effects exactly once (Req 7.2, 9.4).
+    LaunchedEffect(currentViewModel) {
+        currentViewModel.events.collect { event ->
             when (event) {
                 ViewerEvent.NavigateToPin -> onNavigateToPin()
             }
         }
     }
 
-    MediaViewerContent(
-        state = state,
-        onUnblur = viewModel::unblur,
-        onReblur = viewModel::reblur,
-        onLock = viewModel::lock,
-        onBack = onBack,
-        onDismissError = viewModel::dismissError,
-        loadThumbnail = { id -> viewModel.loadBlurredThumbnail(id) },
-        blurRenderer = blurRenderer,
-        modifier = modifier,
-    )
+    // Reveal All: open the centred page already unblurred while unlocked. unblur() is session-
+    // gated and idempotent, so this is a no-op when locked or already clear (Req: Reveal All).
+    LaunchedEffect(currentViewModel, revealAll) {
+        if (revealAll) currentViewModel.unblur()
+    }
+
+    AppBackground(modifier = modifier.fillMaxSize()) {
+        HorizontalPager(
+            state = pagerState,
+            key = { page -> items[page].id },
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            val item = items[page]
+            val pageViewModel = viewModelFor(item)
+            val pageState by pageViewModel.uiState.collectAsState()
+            GalleryPage(
+                state = pageState,
+                isActive = page == pagerState.currentPage,
+                loadThumbnail = pageViewModel::loadBlurredThumbnail,
+                blurRenderer = blurRenderer,
+            )
+        }
+
+        GalleryTopBar(
+            title = currentItem.displayName,
+            position = pagerState.currentPage + 1,
+            total = items.size,
+            onBack = onBack,
+            onLock = currentViewModel::lock,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
+
+        GalleryControls(
+            isClear = currentState.isClear,
+            isLoading = currentState.isLoading,
+            onUnblur = currentViewModel::unblur,
+            onReblur = currentViewModel::reblur,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
+
+    currentState.errorMessage?.let { message ->
+        ViewerErrorDialog(message = message, onDismiss = currentViewModel::dismissError)
+    }
 }
 
 /**
- * Stateless viewer content, separated from the view model for previewing and testing.
+ * A single gallery page's media surface. The item's thumbnail sits underneath an animated blur
+ * whose radius eases to zero as the page is cleared and back to the default when blurred (Req
+ * 6.1, 6.2); the clear content (a decoded image, or ExoPlayer for video) crossfades in on top.
  *
- * In Blurred State the item's thumbnail is shown under [BlurRenderer.blurModifier] so its
- * content is obscured (Req 6.1, 6.2). In Clear State an image is decoded and shown
- * directly, while a video is handed to ExoPlayer for playback (Req 7.1, 7.3). The control
- * row swaps between Unblur and Re-blur and always offers an explicit Lock action.
+ * Only the centred page ([isActive]) builds an ExoPlayer, so off-screen video pages hold no
+ * player; when a page is swiped away its [VideoPlayer] leaves composition and releases.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MediaViewerContent(
+private fun GalleryPage(
     state: ViewerUiState,
-    onUnblur: () -> Unit,
-    onReblur: () -> Unit,
-    onLock: () -> Unit,
-    onBack: () -> Unit,
-    onDismissError: () -> Unit,
+    isActive: Boolean,
     loadThumbnail: suspend (String) -> ByteArray?,
     blurRenderer: BlurRenderer,
-    modifier: Modifier = Modifier,
 ) {
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text(state.item.displayName) },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
-                },
-                actions = {
-                    TextButton(onClick = onLock) { Text("Lock") }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(Color.Black),
-                contentAlignment = Alignment.Center,
-            ) {
-                when {
-                    state.isLoading -> CircularProgressIndicator(color = Color.White)
-
-                    state.isClear && state.mediaBytes != null ->
-                        ClearMedia(state = state, bytes = state.mediaBytes)
-
-                    else -> BlurredMedia(
-                        itemId = state.item.id,
-                        loadThumbnail = loadThumbnail,
-                        blurRenderer = blurRenderer,
-                    )
-                }
-            }
-
-            ViewerControls(
-                isClear = state.isClear,
-                isLoading = state.isLoading,
-                onUnblur = onUnblur,
-                onReblur = onReblur,
-            )
-        }
+    val itemId = state.item.id
+    val thumbnail by produceState<ImageBitmap?>(initialValue = null, itemId) {
+        val bytes = loadThumbnail(itemId)
+        value = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
     }
 
-    state.errorMessage?.let { message ->
-        ViewerErrorDialog(message = message, onDismiss = onDismissError)
+    val blurRadius by animateDpAsState(
+        targetValue = if (state.isClear) 0.dp else RenderEffectBlurRenderer.DEFAULT_BLUR_RADIUS,
+        animationSpec = tween(durationMillis = 320),
+        label = "viewerBlur",
+    )
+
+    val clearBytes = state.mediaBytes
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Base layer: the blurred thumbnail (Req 6.2). Stays mounted so the blur can ease out.
+        val thumb = thumbnail
+        if (thumb != null) {
+            Image(
+                bitmap = thumb,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(blurRenderer.blurModifier(blurRadius)),
+            )
+        } else if (!state.isClear) {
+            Text(
+                text = "Blurred",
+                color = Color.White,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+
+        // Clear layer: crossfades in over the thumbnail once the page reaches Clear State.
+        Crossfade(
+            targetState = state.isClear && clearBytes != null,
+            label = "clearFade",
+        ) { showClear ->
+            if (showClear && clearBytes != null) {
+                ClearMedia(state = state, bytes = clearBytes, isActive = isActive)
+            } else {
+                // Nothing on top; the blurred thumbnail underneath remains visible.
+                Box(modifier = Modifier.fillMaxSize())
+            }
+        }
+
+        if (state.isLoading) {
+            CircularProgressIndicator(color = Color.White)
+        }
     }
 }
 
-/** Renders the clear (unblurred) content: an [Image] for photos, ExoPlayer for videos. */
+/** Renders the clear (unblurred) content: an [Image] for photos, ExoPlayer for active videos. */
 @Composable
-private fun ClearMedia(state: ViewerUiState, bytes: ByteArray) {
+private fun ClearMedia(state: ViewerUiState, bytes: ByteArray, isActive: Boolean) {
     when (state.item.mediaType) {
         MediaType.IMAGE -> {
             val image by produceState<ImageBitmap?>(initialValue = null, bytes) {
@@ -188,14 +259,21 @@ private fun ClearMedia(state: ViewerUiState, bytes: ByteArray) {
             }
         }
 
-        MediaType.VIDEO -> VideoPlayer(bytes = bytes, modifier = Modifier.fillMaxSize())
+        // Only the centred page plays; an off-screen video renders no player so none leak.
+        MediaType.VIDEO ->
+            if (isActive) {
+                VideoPlayer(bytes = bytes, modifier = Modifier.fillMaxSize())
+            } else {
+                Box(modifier = Modifier.fillMaxSize())
+            }
     }
 }
 
 /**
  * Plays the decrypted video [bytes] with ExoPlayer (Req 7.3). The bytes are fed through an
- * in-memory [ByteArrayDataSource] so the clear video is never written to disk; the player
- * is released when the composable leaves the composition or the bytes change.
+ * in-memory [ByteArrayDataSource] so the clear video is never written to disk; the player is
+ * released when the composable leaves the composition (e.g. the page is swiped away) or the
+ * bytes change, so no player survives off-screen.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -225,62 +303,100 @@ private fun VideoPlayer(bytes: ByteArray, modifier: Modifier = Modifier) {
     )
 }
 
-/** Renders the item's thumbnail under a blur so its content is not discernible (Req 6.2). */
+/** Glassy translucent top bar: Back, the item title, a "position / total" indicator, and Lock. */
 @Composable
-private fun BlurredMedia(
-    itemId: String,
-    loadThumbnail: suspend (String) -> ByteArray?,
-    blurRenderer: BlurRenderer,
+private fun GalleryTopBar(
+    title: String,
+    position: Int,
+    total: Int,
+    onBack: () -> Unit,
+    onLock: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val thumbnail by produceState<ImageBitmap?>(initialValue = null, itemId) {
-        val bytes = loadThumbnail(itemId)
-        value = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
-    }
-    val image = thumbnail
-    if (image != null) {
-        Image(
-            bitmap = image,
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
+    GlassSurface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(12.dp),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .then(blurRenderer.blurModifier(RenderEffectBlurRenderer.DEFAULT_BLUR_RADIUS)),
-        )
-    } else {
-        Text(
-            text = "Blurred",
-            color = Color.White,
-            style = MaterialTheme.typography.bodyLarge,
-        )
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = onBack) {
+                Text("Back", color = MaterialTheme.colorScheme.primary)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 1,
+                )
+                Text(
+                    text = "$position / $total",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            TextButton(onClick = onLock) {
+                Text("Lock", color = MaterialTheme.colorScheme.primary)
+            }
+        }
     }
 }
 
-/** Unblur / Re-blur control row. The label and action swap with the current render state. */
+/**
+ * Glassy bottom control bar for the centred page. The label and action swap between Unblur and
+ * Re-blur with the page's render state (Req 7.1, 8.1).
+ */
 @Composable
-private fun ViewerControls(
+private fun GalleryControls(
     isClear: Boolean,
     isLoading: Boolean,
     onUnblur: () -> Unit,
     onReblur: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    GlassSurface(
         modifier = modifier
             .fillMaxWidth()
             .padding(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        shape = RoundedCornerShape(20.dp),
     ) {
-        if (isClear) {
-            Button(
-                onClick = onReblur,
-                modifier = Modifier.weight(1f),
-            ) { Text("Re-blur") }
-        } else {
-            Button(
-                onClick = onUnblur,
-                enabled = !isLoading,
-                modifier = Modifier.weight(1f),
-            ) { Text("Unblur") }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            val colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            )
+            if (isClear) {
+                Button(
+                    onClick = onReblur,
+                    colors = colors,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Re-blur") }
+            } else {
+                Button(
+                    onClick = onUnblur,
+                    enabled = !isLoading,
+                    colors = colors,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Unblur") }
+            }
         }
     }
 }
@@ -298,6 +414,7 @@ private fun ViewerErrorDialog(message: String, onDismiss: () -> Unit) {
                 Text(
                     text = "Something went wrong",
                     style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     text = message,

@@ -29,6 +29,18 @@ interface SettingsStore {
 
     /** Updates the remove-originals preference (Req 4.4). */
     fun setRemoveOriginals(enabled: Boolean)
+
+    /**
+     * A user-controlled global override of the blurred-by-default rule: when `true`, every
+     * item in the grid is shown unblurred at once; when `false` (the default), the normal
+     * blurred-by-default behaviour holds. This only takes effect while the vault is
+     * unlocked — a session lock always returns everything to blurred regardless of this
+     * value. Default is `false` so a fresh vault still loads fully blurred.
+     */
+    val revealAll: StateFlow<Boolean>
+
+    /** Updates the reveal-all override. */
+    fun setRevealAll(enabled: Boolean)
 }
 
 /**
@@ -39,6 +51,7 @@ interface SettingsStore {
  */
 class InMemorySettingsStore(
     initialRemoveOriginals: Boolean = false,
+    initialRevealAll: Boolean = false,
 ) : SettingsStore {
 
     private val _removeOriginals = MutableStateFlow(initialRemoveOriginals)
@@ -46,5 +59,12 @@ class InMemorySettingsStore(
 
     override fun setRemoveOriginals(enabled: Boolean) {
         _removeOriginals.value = enabled
+    }
+
+    private val _revealAll = MutableStateFlow(initialRevealAll)
+    override val revealAll: StateFlow<Boolean> = _revealAll.asStateFlow()
+
+    override fun setRevealAll(enabled: Boolean) {
+        _revealAll.value = enabled
     }
 }

@@ -51,6 +51,7 @@ sealed interface ChangePinFeedback {
  */
 data class SettingsUiState(
     val removeOriginals: Boolean = false,
+    val revealAll: Boolean = false,
     val changePinFeedback: ChangePinFeedback = ChangePinFeedback.Idle,
     val pendingDelete: MediaItem? = null,
     val statusMessage: String? = null,
@@ -97,7 +98,10 @@ class SettingsViewModel(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
-        SettingsUiState(removeOriginals = settingsStore.removeOriginals.value),
+        SettingsUiState(
+            removeOriginals = settingsStore.removeOriginals.value,
+            revealAll = settingsStore.revealAll.value,
+        ),
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
@@ -106,6 +110,7 @@ class SettingsViewModel(
 
     init {
         observeRemoveOriginals()
+        observeRevealAll()
     }
 
     /** Keeps [SettingsUiState.removeOriginals] in sync with the shared store (Req 4.4). */
@@ -113,6 +118,18 @@ class SettingsViewModel(
         viewModelScope.launch {
             settingsStore.removeOriginals.collect { enabled ->
                 _uiState.value = _uiState.value.copy(removeOriginals = enabled)
+            }
+        }
+    }
+
+    /**
+     * Keeps [SettingsUiState.revealAll] in sync with the shared store so the toggle reflects
+     * the live override that the vault grid honours (Req: Reveal All / Blur All).
+     */
+    private fun observeRevealAll() {
+        viewModelScope.launch {
+            settingsStore.revealAll.collect { enabled ->
+                _uiState.value = _uiState.value.copy(revealAll = enabled)
             }
         }
     }
@@ -170,6 +187,15 @@ class SettingsViewModel(
     /** Sets whether successful imports should delete their source originals (Req 4.4). */
     fun setRemoveOriginals(enabled: Boolean) {
         settingsStore.setRemoveOriginals(enabled)
+    }
+
+    /**
+     * Sets the global reveal-all override (Req: Reveal All / Blur All): when `true` every
+     * item is shown unblurred at once; when `false` the blurred-by-default behaviour holds.
+     * Only effective while the vault is unlocked.
+     */
+    fun setRevealAll(enabled: Boolean) {
+        settingsStore.setRevealAll(enabled)
     }
 
     /**

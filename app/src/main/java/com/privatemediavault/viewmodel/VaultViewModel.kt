@@ -86,10 +86,24 @@ class VaultViewModel(
     /** Latest items observed from the repository, kept so render-state changes can re-publish. */
     private var latestItems: List<MediaItem> = emptyList()
 
+    /**
+     * The user's global reveal-all override (Req: Reveal All / Blur All). When `true` and the
+     * session is unlocked, every item is published clear; when `false` the normal per-item
+     * blurred-by-default state holds. Defaults to `false`, so a fresh load stays blurred.
+     */
+    private var revealAll: Boolean = false
+
+    /**
+     * Whether the session is currently locked. A locked session always forces blurred render,
+     * overriding [revealAll], so nothing stays clear once the vault is no longer authenticated.
+     */
+    private var sessionLocked: Boolean = false
+
     init {
         observeItems()
         observeSession()
         observeRemoveOriginals()
+        observeRevealAll()
     }
 
     /**
@@ -115,8 +129,27 @@ class VaultViewModel(
     private fun observeSession() {
         viewModelScope.launch {
             sessionManager.sessionState.collect { state ->
-                if (state is SessionState.Locked) {
+                val locked = state is SessionState.Locked
+                sessionLocked = locked
+                if (locked) {
                     renderStateHolder.resetAllToBlurred()
+                }
+                publish()
+            }
+        }
+    }
+
+    /**
+     * Observes the shared reveal-all override (Req: Reveal All / Blur All). When the user
+     * flips it in Settings the grid re-publishes immediately so every item unblurs (or
+     * re-blurs) at once. The override is honoured only while unlocked; [publish] suppresses it
+     * whenever the session is locked.
+     */
+    private fun observeRevealAll() {
+        viewModelScope.launch {
+            settingsStore.revealAll.collect { enabled ->
+                if (revealAll != enabled) {
+                    revealAll = enabled
                     publish()
                 }
             }
@@ -203,10 +236,14 @@ class VaultViewModel(
     /** Rebuilds the UI item list from the latest items and current render states. */
     private fun publish() {
         val renderById = renderStateHolder.renderStates().associateBy { it.itemId }
+        // The reveal-all override only applies while unlocked; a locked session always blurs.
+        val revealAllActive = revealAll && !sessionLocked
         val gridItems = latestItems.map { item ->
+            val base = renderById[item.id] ?: MediaRenderState(item.id, isClear = false)
+            val effective = if (revealAllActive) base.copy(isClear = true) else base
             VaultGridItem(
                 item = item,
-                renderState = renderById[item.id] ?: MediaRenderState(item.id, isClear = false),
+                renderState = effective,
             )
         }
         _uiState.value = _uiState.value.copy(items = gridItems)

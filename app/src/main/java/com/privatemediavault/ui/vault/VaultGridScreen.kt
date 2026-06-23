@@ -4,6 +4,9 @@ import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,9 +18,11 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -26,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,19 +39,26 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.privatemediavault.data.MediaItem
 import com.privatemediavault.domain.model.FailedImport
 import com.privatemediavault.ui.blur.BlurRenderer
 import com.privatemediavault.ui.blur.RenderEffectBlurRenderer
+import com.privatemediavault.ui.theme.GlassCard
+import com.privatemediavault.ui.theme.glass
 import com.privatemediavault.viewmodel.VaultGridItem
 import com.privatemediavault.viewmodel.VaultUiState
 import com.privatemediavault.viewmodel.VaultViewModel
+
+/** Corner radius for the glass grid cells. */
+private val CellCornerRadius = 18.dp
 
 /**
  * Vault grid entry point. Observes [VaultViewModel.uiState] and renders the blurred-by-
@@ -85,9 +98,10 @@ fun VaultGridScreen(
 /**
  * Stateless grid content, separated from the view model for previewing and testing.
  *
- * Every cell renders its decrypted thumbnail under [BlurRenderer.blurModifier], so the
- * content is obscured by default (Req 6.1, 6.2). The import button launches the system
- * visual-media picker; the returned `Uri`s are handed straight to [onImport].
+ * Every cell renders its decrypted thumbnail under an animated blur whose radius eases to
+ * zero when the item is cleared and back to [RenderEffectBlurRenderer.DEFAULT_BLUR_RADIUS]
+ * when blurred (Req 6.1, 6.2). The import button launches the system visual-media picker;
+ * the returned `Uri`s are handed straight to [onImport].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,18 +121,31 @@ fun VaultGridContent(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
-                title = { Text("Vault") },
+                title = {
+                    Text(
+                        "Vault",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                ),
                 actions = {
-                    TextButton(onClick = onOpenSettings) { Text("Settings") }
+                    TextButton(onClick = onOpenSettings) {
+                        Text("Settings", color = MaterialTheme.colorScheme.primary)
+                    }
                 },
             )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 text = { Text(if (state.isImporting) "Importing\u2026" else "Import") },
-                icon = {},
+                icon = { Text("+", fontSize = 22.sp) },
                 onClick = {
                     pickMedia.launch(
                         PickVisualMediaRequest(
@@ -126,6 +153,9 @@ fun VaultGridContent(
                         ),
                     )
                 },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(18.dp),
             )
         },
     ) { padding ->
@@ -133,16 +163,16 @@ fun VaultGridContent(
             EmptyVault(modifier = Modifier.fillMaxSize().padding(padding))
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 108.dp),
+                columns = GridCells.Adaptive(minSize = 112.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    start = 12.dp,
-                    end = 12.dp,
-                    top = padding.calculateTopPadding() + 12.dp,
-                    bottom = padding.calculateBottomPadding() + 88.dp,
+                    start = 14.dp,
+                    end = 14.dp,
+                    top = padding.calculateTopPadding() + 8.dp,
+                    bottom = padding.calculateBottomPadding() + 96.dp,
                 ),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 items(state.items, key = { it.item.id }) { gridItem ->
                     VaultGridCell(
@@ -162,9 +192,10 @@ fun VaultGridContent(
 }
 
 /**
- * A single grid cell. The decrypted thumbnail is loaded lazily and rendered under
- * [BlurRenderer.blurModifier] whenever the item is in Blurred State (the default for the
- * grid, Req 6.1). Tapping the cell signals selection for the viewer.
+ * A single glass grid cell. The decrypted thumbnail is loaded lazily and crossfades in, then
+ * rendered under an animated blur: the radius eases to zero in Clear State and back to the
+ * default radius in Blurred State, so unblur/re-blur transitions are smooth rather than
+ * snapping (Req 6.1).
  */
 @Composable
 private fun VaultGridCell(
@@ -182,44 +213,78 @@ private fun VaultGridCell(
         }
     }
 
+    val blurRadius by animateDpAsState(
+        targetValue = if (gridItem.renderState.isClear) {
+            0.dp
+        } else {
+            RenderEffectBlurRenderer.DEFAULT_BLUR_RADIUS
+        },
+        animationSpec = tween(durationMillis = 320),
+        label = "cellBlur",
+    )
+
+    val shape = RoundedCornerShape(CellCornerRadius)
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .glass(shape = shape, sheen = false)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        val image = thumbnail
-        if (image != null) {
-            // The grid always shows items blurred by default; the blur modifier is applied
-            // unless the item has been explicitly cleared (which only happens in the viewer).
-            val imageModifier = if (gridItem.renderState.isClear) {
-                Modifier.fillMaxSize()
+        Crossfade(targetState = thumbnail, label = "thumbFade") { image ->
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(shape)
+                        .then(blurRenderer.blurModifier(blurRadius)),
+                )
             } else {
-                Modifier
-                    .fillMaxSize()
-                    .then(blurRenderer.blurModifier(RenderEffectBlurRenderer.DEFAULT_BLUR_RADIUS))
+                // Loading / placeholder state.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                )
             }
-            Image(
-                bitmap = image,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = imageModifier,
-            )
         }
     }
 }
 
 @Composable
 private fun EmptyVault(modifier: Modifier = Modifier) {
-    Box(modifier = modifier.padding(24.dp), contentAlignment = Alignment.Center) {
-        Text(
-            text = "Your vault is empty. Tap Import to add photos or videos.",
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    Box(modifier = modifier.padding(32.dp), contentAlignment = Alignment.Center) {
+        GlassCard(onContentPadding = 28.dp) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .glass(shape = CircleShape, sheen = true),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(text = "\uD83D\uDDBC", fontSize = 26.sp)
+                }
+                Text(
+                    text = "Your vault is empty",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = "Tap Import to add photos or videos. Everything stays encrypted and " +
+                        "blurred by default.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -232,16 +297,12 @@ private fun ImportErrorDialog(
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(24.dp),
-        ) {
+        GlassCard(fill = MaterialTheme.colorScheme.surface) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = "Some files could not be imported",
                     style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 errors.forEach { failure ->
                     Text(

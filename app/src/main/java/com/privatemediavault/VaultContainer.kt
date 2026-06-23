@@ -94,6 +94,14 @@ class VaultContainer(context: Context) {
     // --- Shared cross-screen settings (Req 4.4) ---
     private val settingsStore: SettingsStore = InMemorySettingsStore()
 
+    /**
+     * The shared global Reveal All override (Req: Reveal All / Blur All), exposed read-only so
+     * the media gallery can open the centred page unblurred when it is on (and the session is
+     * unlocked). Backed by the same [SettingsStore] the grid and settings screens observe, so
+     * the gallery honours a toggle made anywhere else.
+     */
+    val revealAll: kotlinx.coroutines.flow.StateFlow<Boolean> = settingsStore.revealAll
+
     // --- Uri -> ImportSource bridge (ContentResolver/MediaMetadataRetriever-backed) ---
     private val importSourceFactory: (Uri) -> ImportSource =
         ContentUriImportSourceFactory(appContext)

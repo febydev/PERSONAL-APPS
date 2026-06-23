@@ -4,14 +4,12 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.privatemediavault.ui.VaultNavHost
+import com.privatemediavault.ui.theme.AppBackground
+import com.privatemediavault.ui.theme.VaultTheme
 
 /**
  * Single Activity that hosts the entire Compose UI and enforces the session-protection
@@ -57,8 +55,8 @@ class VaultActivity : ComponentActivity() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(autoLockObserver)
 
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+            VaultTheme {
+                AppBackground {
                     VaultNavHost(container = container)
                 }
             }
