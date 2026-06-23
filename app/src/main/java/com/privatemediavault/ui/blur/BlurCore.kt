@@ -86,11 +86,11 @@ object BlurCore {
                 val cellX = (x * bx) / width
                 val cell = cellY * bx + cellX
                 val p = pixels[y * width + x]
-                sumA[cell] += (p ushr 24) and 0xFF
-                sumR[cell] += (p ushr 16) and 0xFF
-                sumG[cell] += (p ushr 8) and 0xFF
-                sumB[cell] += p and 0xFF
-                count[cell] += 1
+                sumA[cell] = sumA[cell] + ((p ushr 24) and 0xFF).toLong()
+                sumR[cell] = sumR[cell] + ((p ushr 16) and 0xFF).toLong()
+                sumG[cell] = sumG[cell] + ((p ushr 8) and 0xFF).toLong()
+                sumB[cell] = sumB[cell] + (p and 0xFF).toLong()
+                count[cell] = count[cell] + 1L
             }
         }
 
